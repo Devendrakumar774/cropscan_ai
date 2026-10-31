@@ -1,84 +1,80 @@
+"use client";
+
 import Link from "next/link";
-import { Camera, History, Sparkles, ShieldCheck, Sprout } from "lucide-react";
+import { Camera, History, ArrowRight } from "lucide-react";
+import { useLanguage } from "@/context/LanguageContext";
 
 export default function HomePage() {
+  const { t } = useLanguage();
+
   return (
-    <div className="flex flex-col gap-6 py-2">
-      {/* Hero Header */}
-      <section className="bg-white rounded-3xl p-6 border border-emerald-100 shadow-xs text-center space-y-4">
-        <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-emerald-100 text-emerald-700">
-          <Sprout className="w-9 h-9" />
-        </div>
+    <div className="flex flex-col gap-6 py-2 text-left">
+      {/* Main Greeting Card */}
+      <section className="bg-white rounded-[8px] p-6 border border-[#2B2118]/15 shadow-xs text-left space-y-4">
         <div className="space-y-2">
-          <h1 className="text-2xl sm:text-3xl font-extrabold text-slate-900 tracking-tight">
-            Protect Your Harvest with <span className="text-emerald-700">CropScan AI</span>
+          <span className="inline-block text-xs font-bold uppercase tracking-wider text-[#2F5D3A] bg-[#2F5D3A]/10 px-2.5 py-1 rounded-[6px]">
+            {t("home_kisan_badge")}
+          </span>
+          <h1 className="font-heading text-2xl sm:text-3xl font-bold text-[#2B2118] tracking-tight leading-tight">
+            {t("home_hero_title")}
           </h1>
-          <p className="text-base sm:text-lg text-slate-600 max-w-md mx-auto leading-relaxed">
-            Snap or upload a photo of a leaf to detect crop diseases and nutrient deficiencies with expert treatment recommendations.
+          <p className="text-base sm:text-lg text-[#2B2118]/85 leading-relaxed">
+            {t("home_hero_desc")}
           </p>
         </div>
 
-        {/* Primary Call to Action Buttons - Large and Mobile-friendly */}
+        {/* Buttons */}
         <div className="pt-2 flex flex-col gap-3">
           <Link
             href="/scan"
-            className="w-full flex items-center justify-center gap-3 bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white font-bold text-lg py-4 px-6 rounded-2xl shadow-sm transition-all focus:outline-hidden focus:ring-4 focus:ring-emerald-200"
+            className="w-full min-h-[48px] h-13 flex items-center justify-center gap-3 bg-[#2F5D3A] hover:bg-[#24492D] active:bg-[#1C3B24] text-[#F6F1E7] font-bold text-lg px-6 rounded-[8px] transition-colors focus:outline-hidden"
           >
-            <Camera className="w-6 h-6" />
-            <span>Scan Crop Leaf Now</span>
+            <Camera className="w-5 h-5 shrink-0" />
+            <span>{t("home_btn_scan")}</span>
           </Link>
 
           <Link
             href="/history"
-            className="w-full flex items-center justify-center gap-2 bg-white hover:bg-emerald-50/80 active:bg-emerald-100 text-emerald-800 border-2 border-emerald-600 font-bold text-base py-3.5 px-6 rounded-2xl transition-all focus:outline-hidden focus:ring-4 focus:ring-emerald-100"
+            className="w-full min-h-[48px] h-12 flex items-center justify-center gap-2 bg-[#FAF6EF] hover:bg-[#F2EBE0] active:bg-[#EAE1D3] text-[#2B2118] border border-[#2B2118]/25 font-bold text-base px-6 rounded-[8px] transition-colors focus:outline-hidden"
           >
-            <History className="w-5 h-5" />
-            <span>View Past Scans</span>
+            <History className="w-5 h-5 shrink-0 text-[#2B2118]/80" />
+            <span>{t("home_btn_history")}</span>
           </Link>
         </div>
       </section>
 
-      {/* How it Works - Informational Placeholders */}
-      <section className="space-y-3">
-        <h2 className="text-sm font-bold uppercase tracking-wider text-emerald-800 px-1">
-          How It Works
+      {/* Step by Step Guide */}
+      <section className="space-y-3 text-left">
+        <h2 className="font-heading text-lg font-bold text-[#2B2118]">
+          {t("home_how_it_works")}
         </h2>
 
         <div className="grid grid-cols-1 gap-3">
-          <div className="bg-white rounded-2xl p-4 border border-emerald-100/80 flex items-start gap-4">
-            <div className="w-10 h-10 rounded-xl bg-emerald-50 text-emerald-700 flex items-center justify-center shrink-0 font-bold text-base">
-              1
-            </div>
-            <div>
-              <h3 className="font-bold text-slate-900 text-base">Take a Clear Leaf Photo</h3>
-              <p className="text-sm text-slate-600 leading-normal">
-                Focus on affected areas in good daylight for the highest accuracy.
-              </p>
-            </div>
+          <div className="bg-white rounded-[8px] p-4 border border-[#2B2118]/15 shadow-xs text-left">
+            <h3 className="font-heading text-base font-bold text-[#2F5D3A] mb-1">
+              {t("home_step1_title")}
+            </h3>
+            <p className="text-sm text-[#2B2118]/85 leading-normal">
+              {t("home_step1_desc")}
+            </p>
           </div>
 
-          <div className="bg-white rounded-2xl p-4 border border-emerald-100/80 flex items-start gap-4">
-            <div className="w-10 h-10 rounded-xl bg-emerald-50 text-emerald-700 flex items-center justify-center shrink-0 font-bold text-base">
-              2
-            </div>
-            <div>
-              <h3 className="font-bold text-slate-900 text-base">Instant AI Analysis</h3>
-              <p className="text-sm text-slate-600 leading-normal">
-                Detect fungal, bacterial, viral conditions, or soil nutrient shortages.
-              </p>
-            </div>
+          <div className="bg-white rounded-[8px] p-4 border border-[#2B2118]/15 shadow-xs text-left">
+            <h3 className="font-heading text-base font-bold text-[#2F5D3A] mb-1">
+              {t("home_step2_title")}
+            </h3>
+            <p className="text-sm text-[#2B2118]/85 leading-normal">
+              {t("home_step2_desc")}
+            </p>
           </div>
 
-          <div className="bg-white rounded-2xl p-4 border border-emerald-100/80 flex items-start gap-4">
-            <div className="w-10 h-10 rounded-xl bg-emerald-50 text-emerald-700 flex items-center justify-center shrink-0 font-bold text-base">
-              3
-            </div>
-            <div>
-              <h3 className="font-bold text-slate-900 text-base">Get Treatment Advice</h3>
-              <p className="text-sm text-slate-600 leading-normal">
-                Follow actionable organic and chemical remediation steps.
-              </p>
-            </div>
+          <div className="bg-white rounded-[8px] p-4 border border-[#2B2118]/15 shadow-xs text-left">
+            <h3 className="font-heading text-base font-bold text-[#2F5D3A] mb-1">
+              {t("home_step3_title")}
+            </h3>
+            <p className="text-sm text-[#2B2118]/85 leading-normal">
+              {t("home_step3_desc")}
+            </p>
           </div>
         </div>
       </section>

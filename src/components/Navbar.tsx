@@ -3,83 +3,120 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useState } from "react";
-import { Sprout, Menu, X, Home, Camera, FileText, History } from "lucide-react";
-
-const NAV_ITEMS = [
-  { href: "/", label: "Home", icon: Home },
-  { href: "/scan", label: "Scan", icon: Camera },
-  { href: "/result", label: "Result", icon: FileText },
-  { href: "/history", label: "History", icon: History },
-];
+import { Sprout, Menu, X, Home, Camera, FileText, History, Globe } from "lucide-react";
+import { useLanguage } from "@/context/LanguageContext";
+import { LANGUAGES, LanguageCode } from "@/lib/translations";
 
 export default function Navbar() {
   const pathname = usePathname();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const { language, setLanguage, t } = useLanguage();
+
+  const NAV_ITEMS = [
+    { href: "/", labelKey: "nav_home", icon: Home },
+    { href: "/scan", labelKey: "nav_scan", icon: Camera },
+    { href: "/result", labelKey: "nav_result", icon: FileText },
+    { href: "/history", labelKey: "nav_history", icon: History },
+  ];
 
   return (
-    <header className="sticky top-0 z-50 bg-white/95 backdrop-blur-sm border-b border-emerald-100 shadow-xs">
+    <header className="sticky top-0 z-50 bg-[#FAF6EF] border-b border-[#2B2118]/15">
       <div className="max-w-4xl mx-auto px-4 sm:px-6">
-        <div className="flex items-center justify-between h-16">
+        <div className="flex items-center justify-between h-18">
           {/* Brand Logo & Name */}
           <Link
             href="/"
-            className="flex items-center gap-2.5 text-emerald-800 hover:text-emerald-900 transition-colors"
+            className="flex items-center gap-3 text-[#2F5D3A] hover:opacity-90 transition-opacity"
           >
-            <div className="w-10 h-10 rounded-xl bg-emerald-600 flex items-center justify-center text-white shadow-xs">
-              <Sprout className="w-6 h-6" />
-            </div>
-            <div className="flex flex-col">
-              <span className="font-bold text-lg leading-tight tracking-tight text-emerald-900">
-                CropScan AI
+            <Sprout className="w-8 h-8 text-[#2F5D3A] shrink-0" />
+            <div className="flex flex-col text-left">
+              <span className="font-heading font-bold text-xl leading-none text-[#2F5D3A]">
+                {t("app_title")}
               </span>
-              <span className="text-[11px] font-medium text-emerald-600 tracking-wide uppercase">
-                Plant Health Assistant
+              <span className="text-xs font-semibold text-[#2B2118]/75 mt-1">
+                {t("tagline")}
               </span>
             </div>
           </Link>
 
-          {/* Desktop & Tablet Navigation */}
-          <nav className="hidden md:flex items-center gap-1.5">
-            {NAV_ITEMS.map((item) => {
-              const isActive = pathname === item.href;
-              const Icon = item.icon;
-              return (
-                <Link
-                  key={item.href}
-                  href={item.href}
-                  className={`flex items-center gap-2 px-3.5 py-2 rounded-lg text-sm font-semibold transition-all ${
-                    isActive
-                      ? "bg-emerald-100 text-emerald-900"
-                      : "text-slate-600 hover:text-emerald-800 hover:bg-emerald-50/80"
-                  }`}
-                >
-                  <Icon className="w-4 h-4" />
-                  <span>{item.label}</span>
-                </Link>
-              );
-            })}
-          </nav>
+          {/* Desktop Navigation & Language Dropdown */}
+          <div className="hidden md:flex items-center gap-3">
+            <nav className="flex items-center gap-1.5">
+              {NAV_ITEMS.map((item) => {
+                const isActive = pathname === item.href;
+                const Icon = item.icon;
+                return (
+                  <Link
+                    key={item.href}
+                    href={item.href}
+                    className={`flex items-center gap-2 px-3 py-2 rounded-[8px] text-sm font-bold transition-colors ${isActive
+                        ? "bg-[#2F5D3A] text-[#F6F1E7]"
+                        : "text-[#2B2118] hover:bg-[#2B2118]/8"
+                      }`}
+                  >
+                    <Icon className="w-4 h-4 shrink-0" />
+                    <span>{t(item.labelKey)}</span>
+                  </Link>
+                );
+              })}
+            </nav>
 
-          {/* Mobile Hamburger Toggle */}
-          <button
-            type="button"
-            onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
-            className="md:hidden inline-flex items-center justify-center p-2.5 rounded-xl text-emerald-800 hover:bg-emerald-50 focus:outline-hidden focus:ring-2 focus:ring-emerald-500"
-            aria-label="Toggle navigation menu"
-            aria-expanded={mobileMenuOpen}
-          >
-            {mobileMenuOpen ? (
-              <X className="w-6 h-6" />
-            ) : (
-              <Menu className="w-6 h-6" />
-            )}
-          </button>
+            {/* Language Selector (Desktop) */}
+            <div className="flex items-center gap-1.5 bg-white border border-[#2B2118]/25 rounded-[8px] px-2.5 py-1.5">
+              <Globe className="w-4 h-4 text-[#2F5D3A] shrink-0" />
+              <select
+                aria-label="Select Language"
+                value={language}
+                onChange={(e) => setLanguage(e.target.value as LanguageCode)}
+                className="bg-transparent text-xs font-bold text-[#2B2118] outline-hidden cursor-pointer"
+              >
+                {LANGUAGES.map((lang) => (
+                  <option key={lang.code} value={lang.code}>
+                    {lang.label} ({lang.nameInEnglish})
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          {/* Mobile Right Controls: Language Selector & Hamburger */}
+          <div className="flex md:hidden items-center gap-2">
+            <div className="flex items-center gap-1 bg-white border border-[#2B2118]/25 rounded-[8px] px-2 py-1.5">
+              <Globe className="w-3.5 h-3.5 text-[#2F5D3A] shrink-0" />
+              <select
+                aria-label="Select Language"
+                value={language}
+                onChange={(e) => setLanguage(e.target.value as LanguageCode)}
+                className="bg-transparent text-xs font-bold text-[#2B2118] outline-hidden cursor-pointer"
+              >
+                {LANGUAGES.map((lang) => (
+                  <option key={lang.code} value={lang.code}>
+                    {lang.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
+              className="inline-flex items-center justify-center min-h-[48px] min-w-[48px] p-2.5 rounded-[8px] text-[#2B2118] hover:bg-[#2B2118]/8 cursor-pointer focus:outline-hidden"
+              aria-label="Menu"
+              aria-expanded={mobileMenuOpen}
+            >
+              {mobileMenuOpen ? (
+                <X className="w-7 h-7 text-[#2B2118]" />
+              ) : (
+                <Menu className="w-7 h-7 text-[#2B2118]" />
+              )}
+            </button>
+          </div>
         </div>
       </div>
 
       {/* Mobile Drawer Menu */}
       {mobileMenuOpen && (
-        <div className="md:hidden border-b border-emerald-100 bg-white px-4 pt-2 pb-4 space-y-1 shadow-lg">
+        <div className="md:hidden border-t border-[#2B2118]/15 bg-[#FAF6EF] px-4 py-3 space-y-1">
           {NAV_ITEMS.map((item) => {
             const isActive = pathname === item.href;
             const Icon = item.icon;
@@ -88,14 +125,13 @@ export default function Navbar() {
                 key={item.href}
                 href={item.href}
                 onClick={() => setMobileMenuOpen(false)}
-                className={`flex items-center gap-3 px-4 py-3 rounded-xl text-base font-semibold transition-colors ${
-                  isActive
-                    ? "bg-emerald-600 text-white"
-                    : "text-slate-700 hover:bg-emerald-50 hover:text-emerald-900"
-                }`}
+                className={`flex items-center gap-3 px-4 py-3.5 rounded-[8px] text-base font-bold text-left transition-colors min-h-[48px] ${isActive
+                    ? "bg-[#2F5D3A] text-[#F6F1E7]"
+                    : "text-[#2B2118] hover:bg-[#2B2118]/8"
+                  }`}
               >
-                <Icon className="w-5 h-5" />
-                <span>{item.label}</span>
+                <Icon className="w-5 h-5 shrink-0" />
+                <span>{t(item.labelKey)}</span>
               </Link>
             );
           })}
@@ -104,4 +140,3 @@ export default function Navbar() {
     </header>
   );
 }
-
