@@ -2,6 +2,7 @@
 
 import { useState, useRef, ChangeEvent } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import {
   Camera,
   Image as ImageIcon,
@@ -13,10 +14,12 @@ import {
   Info,
   Code2,
   HelpCircle,
+  RefreshCw,
 } from "lucide-react";
 import { compressImageToUnder1MB, formatBytes, CompressionResult } from "@/lib/imageCompression";
 import { uploadCropImage, saveScanRecord } from "@/lib/supabase";
 import { useLanguage } from "@/context/LanguageContext";
+import { useAuth } from "@/context/AuthContext";
 import type { CropDiagnosisResult } from "@/app/api/analyze/route";
 
 export const CROPS = [
@@ -33,7 +36,9 @@ export const CROPS = [
 export type CropValue = (typeof CROPS)[number]["value"];
 
 export default function ScanPage() {
+  const router = useRouter();
   const { language, t } = useLanguage();
+  const { user } = useAuth();
   const [selectedCrop, setSelectedCrop] = useState<CropValue>("Wheat");
   const [compressionResult, setCompressionResult] = useState<CompressionResult | null>(null);
   const [isCompressing, setIsCompressing] = useState(false);
@@ -136,12 +141,19 @@ export default function ScanPage() {
       const data = await response.json();
 
       if (!response.ok) {
-        throw new Error(
-          data.error ||
-          (language === "en"
-            ? `Diagnosis failed (Status ${response.status})`
-            : `Jaanch fail hui (Code ${response.status})`)
-        );
+        const friendlyFallback = t("scan_server_busy");
+        const receivedError = data?.error;
+        const isTechnical =
+          !receivedError ||
+          typeof receivedError !== "string" ||
+          receivedError.includes("failed with status") ||
+          receivedError.includes("status 5") ||
+          receivedError.includes("429") ||
+          receivedError.includes("JSON") ||
+          receivedError.includes("GEMINI") ||
+          receivedError.includes("API key");
+
+        throw new Error(isTechnical ? friendlyFallback : receivedError);
       }
 
       console.log("=== [CropScan AI] Gemini Analysis Result ===", data);
@@ -149,17 +161,28 @@ export default function ScanPage() {
 
       const finalImageUrl = uploadedUrl || compressionResult.previewUrl;
 
-      // Save scan record to Supabase 'scans' table
-      const savedScan = await saveScanRecord({
-        crop: selectedCrop,
-        problem_name: data.problem_name,
-        problem_type: data.problem_type,
-        confidence: data.confidence,
-        result_json: data,
-        image_url: finalImageUrl,
-      });
+      let savedScanId: string | undefined = undefined;
 
-      console.log("=== [CropScan AI] Scan Saved to Supabase ===", savedScan);
+      // 3. Do NOT save non-plant scans to Supabase history
+      if (data.is_plant) {
+        try {
+          const savedScan = await saveScanRecord({
+            crop: selectedCrop,
+            problem_name: data.problem_name,
+            problem_type: data.problem_type,
+            confidence: data.confidence,
+            result_json: data,
+            image_url: finalImageUrl,
+            user_id: user?.id || "anonymous",
+          });
+          savedScanId = savedScan?.id;
+          console.log("=== [CropScan AI] Scan Saved to Supabase ===", savedScan);
+        } catch (dbErr) {
+          console.warn("Could not save to Supabase history:", dbErr);
+        }
+      } else {
+        console.log("=== [CropScan AI] Non-plant scan detected; skipped saving to Supabase history ===");
+      }
 
       if (typeof window !== "undefined") {
         sessionStorage.setItem(
@@ -169,26 +192,37 @@ export default function ScanPage() {
             imagePreview: finalImageUrl,
             crop: selectedCrop,
             language: language,
-            scanId: savedScan.id,
+            scanId: savedScanId,
           })
         );
       }
+
+      // Navigate to /result page
+      router.push("/result");
     } catch (err: unknown) {
-      const message =
-        err instanceof Error
-          ? err.message
-          : language === "en"
-            ? "An unexpected error occurred during scan."
-            : "Jaanch karte waqt anchaaha error aaya.";
       console.error("Scan submission error:", err);
-      setError(message);
+      const rawMsg = err instanceof Error ? err.message : "";
+      const isTechnical =
+        !rawMsg ||
+        rawMsg.includes("Failed to fetch") ||
+        rawMsg.includes("NetworkError") ||
+        rawMsg.includes("status ") ||
+        rawMsg.includes("Status ") ||
+        rawMsg.includes("JSON") ||
+        rawMsg.includes("Code ") ||
+        rawMsg.includes("Internal") ||
+        rawMsg.includes("Error:") ||
+        rawMsg.includes("fetch failed");
+
+      const displayMessage = isTechnical ? t("scan_server_busy") : rawMsg;
+      setError(displayMessage);
     } finally {
       setIsScanning(false);
     }
   };
 
   return (
-    <div className="flex flex-col gap-5 py-2 text-left">
+    <div className="flex flex-col gap-5 py-2 text-left max-w-full overflow-hidden">
       {/* Hidden File Inputs */}
       <input
         ref={cameraInputRef}
@@ -217,46 +251,66 @@ export default function ScanPage() {
         <p className="text-base text-[#2B2118]/85">{t("scan_subtitle")}</p>
       </div>
 
-      {/* Error Alert */}
+      {/* Error Alert with Try Again Button */}
       {error && (
-        <div className="bg-[#B5412F]/10 border border-[#B5412F] text-[#B5412F] rounded-[8px] p-4 flex items-start gap-3 text-sm text-left">
-          <AlertCircle className="w-5 h-5 shrink-0 mt-0.5 text-[#B5412F]" />
-          <div className="space-y-1">
-            <p className="font-bold">
-              {language === "en" ? "Notice:" : "Dhyan dein:"}
-            </p>
-            <p className="font-medium">{error}</p>
+        <div className="bg-[#B5412F]/10 border border-[#B5412F] text-[#B5412F] rounded-[8px] p-4 sm:p-5 flex flex-col gap-3 text-left">
+          <div className="flex items-start gap-3 text-sm">
+            <AlertCircle className="w-5 h-5 shrink-0 mt-0.5 text-[#B5412F]" />
+            <div className="space-y-1 flex-1">
+              <p className="font-bold">
+                {t("result_error_title")}
+              </p>
+              <p className="font-medium leading-relaxed">{error}</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2 pt-1">
+            <button
+              type="button"
+              onClick={handleScanSubmit}
+              disabled={isScanning || !compressionResult}
+              className="min-h-[44px] px-4 py-2 bg-[#B5412F] hover:bg-[#9c3625] text-white font-bold text-xs sm:text-sm rounded-[6px] transition-colors cursor-pointer flex items-center gap-1.5 disabled:opacity-50"
+            >
+              <RefreshCw className="w-4 h-4" />
+              <span>{t("result_btn_try_again")}</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setError(null)}
+              className="min-h-[44px] px-3 py-2 bg-transparent text-[#2B2118]/70 hover:text-[#2B2118] font-semibold text-xs rounded-[6px] cursor-pointer"
+            >
+              {language === "en" ? "Dismiss" : "हटाएं"}
+            </button>
           </div>
         </div>
       )}
 
       {/* Photo Capture & Upload Box */}
       {!compressionResult ? (
-        <div className="bg-white rounded-[8px] border border-[#2B2118]/20 p-5 sm:p-6 flex flex-col gap-4 text-left shadow-xs">
+        <div className="bg-white rounded-[6px] border border-[#2B2118]/25 p-5 sm:p-6 flex flex-col gap-4 text-left">
           <div className="space-y-1">
             <h2 className="font-heading text-lg font-bold text-[#2B2118]">
               {isCompressing
                 ? language === "en"
-                  ? "Compressing photo under 1 MB..."
-                  : "Photo taiyar ki ja rahi hai..."
+                  ? "Preparing photo..."
+                  : "फोटो तैयार की जा रही है..."
                 : t("scan_box_title")}
             </h2>
             <p className="text-sm text-[#2B2118]/80 leading-normal">
               {isCompressing
                 ? language === "en"
-                  ? "Optimizing photo under 1 MB for fast analysis"
-                  : "Photo ko 1 MB se kam kiya ja raha hai taaki bina rukawat scan ho sake."
+                  ? "Making photo smaller than 1 MB so it sends fast."
+                  : "फोटो को 1 MB से कम किया जा रहा है ताकि जल्दी पहुंचे।"
                 : t("scan_box_desc")}
             </p>
           </div>
 
-          {/* Action Buttons */}
+          {/* Action Buttons: Exactly ONE solid green button, secondary is outlined */}
           <div className="flex flex-col gap-3 pt-1">
             <button
               type="button"
               onClick={() => cameraInputRef.current?.click()}
               disabled={isCompressing}
-              className="w-full min-h-[48px] h-13 flex items-center justify-center gap-3 bg-[#2F5D3A] hover:bg-[#24492D] active:bg-[#1C3B24] text-[#F6F1E7] font-bold text-base sm:text-lg px-6 rounded-[8px] transition-colors cursor-pointer focus:outline-hidden disabled:opacity-60 disabled:cursor-not-allowed"
+              className="w-full min-h-[48px] h-13 flex items-center justify-center gap-3 bg-[#2F5D3A] hover:bg-[#24492D] active:bg-[#1C3B24] text-[#F6F1E7] font-bold text-base sm:text-lg px-6 rounded-[6px] transition-colors cursor-pointer focus:outline-hidden disabled:opacity-60 disabled:cursor-not-allowed"
             >
               {isCompressing ? (
                 <Loader2 className="w-5 h-5 animate-spin" />
@@ -270,7 +324,7 @@ export default function ScanPage() {
               type="button"
               onClick={() => galleryInputRef.current?.click()}
               disabled={isCompressing}
-              className="w-full min-h-[48px] h-12 flex items-center justify-center gap-3 bg-[#FAF6EF] hover:bg-[#F2EBE0] active:bg-[#EAE1D3] text-[#2B2118] border border-[#2B2118]/25 font-bold text-base px-6 rounded-[8px] transition-colors cursor-pointer focus:outline-hidden disabled:opacity-60 disabled:cursor-not-allowed"
+              className="w-full min-h-[48px] h-12 flex items-center justify-center gap-3 bg-transparent hover:bg-[#2B2118]/5 text-[#2B2118] border border-[#2B2118]/25 font-bold text-base px-6 rounded-[6px] transition-colors cursor-pointer focus:outline-hidden disabled:opacity-60 disabled:cursor-not-allowed"
             >
               <ImageIcon className="w-5 h-5 text-[#2B2118]/80" />
               <span>{t("scan_btn_gallery")}</span>
@@ -279,24 +333,23 @@ export default function ScanPage() {
         </div>
       ) : (
         /* Image Preview Card */
-        <div className="bg-white rounded-[8px] p-5 border border-[#2B2118]/20 shadow-xs space-y-4 text-left">
+        <div className="bg-white rounded-[6px] p-5 border border-[#2B2118]/25 space-y-4 text-left">
           <div className="flex items-center justify-between">
-            <span className="text-sm font-bold text-[#2F5D3A] flex items-center gap-1.5">
-              <CheckCircle2 className="w-4 h-4 text-[#2F5D3A]" />
+            <span className="text-sm font-bold text-[#2F5D3A]">
               <span>{t("scan_photo_selected")}</span>
             </span>
             <button
               type="button"
               onClick={handleResetImage}
               disabled={isScanning}
-              className="flex items-center gap-1.5 text-xs font-bold text-[#2B2118] bg-[#FAF6EF] hover:bg-[#F2EBE0] border border-[#2B2118]/20 px-3 py-2 rounded-[8px] transition-colors cursor-pointer disabled:opacity-50"
+              className="flex items-center gap-1.5 text-xs font-bold text-[#2B2118] bg-transparent hover:bg-[#2B2118]/5 border border-[#2B2118]/25 px-3 py-2 rounded-[6px] transition-colors cursor-pointer disabled:opacity-50"
             >
               <RotateCcw className="w-3.5 h-3.5" />
               <span>{t("scan_btn_retake")}</span>
             </button>
           </div>
 
-          <div className="relative w-full h-64 sm:h-72 rounded-[8px] overflow-hidden bg-[#FAF6EF] border border-[#2B2118]/20 flex items-center justify-center">
+          <div className="relative w-full h-64 sm:h-72 rounded-[6px] overflow-hidden bg-[#FAF6EF] border border-[#2B2118]/20 flex items-center justify-center">
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img
               src={compressionResult.previewUrl}
@@ -305,19 +358,16 @@ export default function ScanPage() {
             />
           </div>
 
-          <div className="bg-[#FAF6EF] border border-[#2B2118]/15 rounded-[8px] p-3 flex items-center justify-between text-xs text-[#2B2118] font-medium">
-            <div className="flex items-center gap-2">
-              <Info className="w-4 h-4 text-[#2F5D3A] shrink-0" />
-              <span>
-                Photo size: <strong>{formatBytes(compressionResult.compressedSize)}</strong>
-                {compressionResult.originalSize > compressionResult.compressedSize && (
-                  <span className="text-[#2B2118]/60 ml-1">
-                    (from {formatBytes(compressionResult.originalSize)})
-                  </span>
-                )}
-              </span>
-            </div>
-            <span className="bg-[#E0A526] text-[#2B2118] px-2 py-0.5 rounded-[4px] text-[11px] font-bold">
+          <div className="border border-[#2B2118]/25 rounded-[6px] p-3 flex items-center justify-between text-xs text-[#2B2118] font-medium">
+            <span>
+              Photo size: <strong>{formatBytes(compressionResult.compressedSize)}</strong>
+              {compressionResult.originalSize > compressionResult.compressedSize && (
+                <span className="text-[#2B2118]/60 ml-1">
+                  (from {formatBytes(compressionResult.originalSize)})
+                </span>
+              )}
+            </span>
+            <span className="text-[#2B2118] border border-[#2B2118]/25 px-2 py-0.5 rounded-[4px] text-[11px] font-bold">
               {t("scan_under_1mb")}
             </span>
           </div>
@@ -325,7 +375,7 @@ export default function ScanPage() {
       )}
 
       {/* Crop Selector */}
-      <div className="bg-white rounded-[8px] p-5 border border-[#2B2118]/20 shadow-xs space-y-2 text-left">
+      <div className="bg-white rounded-[6px] p-5 border border-[#2B2118]/25 space-y-2 text-left">
         <label
           htmlFor="crop-select"
           className="block text-sm font-bold text-[#2B2118]"
@@ -337,7 +387,7 @@ export default function ScanPage() {
           value={selectedCrop}
           onChange={(e) => setSelectedCrop(e.target.value as CropValue)}
           disabled={isScanning}
-          className="w-full bg-[#FAF6EF] hover:bg-white focus:bg-white text-[#2B2118] font-semibold text-base py-3 px-4 rounded-[8px] border border-[#2B2118]/30 focus:border-[#2F5D3A] transition-colors outline-hidden cursor-pointer disabled:opacity-60 min-h-[48px]"
+          className="w-full bg-transparent hover:bg-white focus:bg-white text-[#2B2118] font-semibold text-base py-3 px-4 rounded-[6px] border border-[#2B2118]/25 focus:border-[#2F5D3A] transition-colors outline-hidden cursor-pointer disabled:opacity-60 min-h-[48px]"
         >
           {CROPS.map((crop) => (
             <option key={crop.value} value={crop.value}>
@@ -348,16 +398,16 @@ export default function ScanPage() {
         <p className="text-xs text-[#2B2118]/70">{t("scan_crop_help")}</p>
       </div>
 
-      {/* 3 Quick Optional Follow-up Questions Card (Displayed after photo is selected) */}
+      {/* 3 Quick Optional Follow-up Questions Card */}
       {compressionResult && (
-        <div className="bg-white rounded-[8px] p-5 border border-[#2B2118]/20 shadow-xs space-y-4 text-left">
+        <div className="bg-white rounded-[6px] p-5 border border-[#2B2118]/25 space-y-4 text-left">
           <div className="border-b border-[#2B2118]/15 pb-2">
             <h3 className="font-heading text-base font-bold text-[#2B2118]">
               {t("scan_q_title")}
             </h3>
           </div>
 
-          {/* Question 1: How many days since symptoms started? (1-3, 4-7, 7+) */}
+          {/* Question 1: How many days ago did it start? */}
           <div className="space-y-2">
             <label className="block text-sm font-semibold text-[#2B2118]">
               {t("scan_q1_label")}
@@ -371,9 +421,9 @@ export default function ScanPage() {
                     setDaysSinceSymptoms(daysSinceSymptoms === days ? null : days)
                   }
                   disabled={isScanning}
-                  className={`min-h-[44px] py-2 px-3 rounded-[8px] font-bold text-sm border transition-colors cursor-pointer text-center ${daysSinceSymptoms === days
+                  className={`min-h-[44px] py-2 px-3 rounded-[6px] font-bold text-sm border transition-colors cursor-pointer text-center ${daysSinceSymptoms === days
                     ? "bg-[#2F5D3A] text-[#F6F1E7] border-[#2F5D3A]"
-                    : "bg-[#FAF6EF] hover:bg-[#F2EBE0] text-[#2B2118] border-[#2B2118]/25"
+                    : "bg-transparent hover:bg-[#2B2118]/5 text-[#2B2118] border-[#2B2118]/25"
                     }`}
                 >
                   {days} {language === "en" ? "days" : "din"}
@@ -382,7 +432,7 @@ export default function ScanPage() {
             </div>
           </div>
 
-          {/* Question 2: How much of the field is affected? (A few plants, Half, Most) */}
+          {/* Question 2: How much of the field is affected? */}
           <div className="space-y-2">
             <label className="block text-sm font-semibold text-[#2B2118]">
               {t("scan_q2_label")}
@@ -400,9 +450,9 @@ export default function ScanPage() {
                     setFieldSpread(fieldSpread === opt.key ? null : opt.key)
                   }
                   disabled={isScanning}
-                  className={`min-h-[44px] py-2 px-3 rounded-[8px] font-bold text-xs sm:text-sm border transition-colors cursor-pointer text-center ${fieldSpread === opt.key
+                  className={`min-h-[44px] py-2 px-3 rounded-[6px] font-bold text-xs sm:text-sm border transition-colors cursor-pointer text-center ${fieldSpread === opt.key
                     ? "bg-[#2F5D3A] text-[#F6F1E7] border-[#2F5D3A]"
-                    : "bg-[#FAF6EF] hover:bg-[#F2EBE0] text-[#2B2118] border-[#2B2118]/25"
+                    : "bg-transparent hover:bg-[#2B2118]/5 text-[#2B2118] border-[#2B2118]/25"
                     }`}
                 >
                   {opt.label}
@@ -411,7 +461,7 @@ export default function ScanPage() {
             </div>
           </div>
 
-          {/* Question 3: Recent fertilizer or pesticide (text, optional) */}
+          {/* Question 3: Recent fertilizer or pesticide */}
           <div className="space-y-2">
             <label
               htmlFor="chemicals-input"
@@ -426,19 +476,19 @@ export default function ScanPage() {
               onChange={(e) => setRecentChemicals(e.target.value)}
               disabled={isScanning}
               placeholder={t("scan_q3_placeholder")}
-              className="w-full bg-[#FAF6EF] hover:bg-white focus:bg-white text-[#2B2118] text-sm py-3 px-4 rounded-[8px] border border-[#2B2118]/30 focus:border-[#2F5D3A] transition-colors outline-hidden disabled:opacity-60 min-h-[44px]"
+              className="w-full bg-transparent hover:bg-white focus:bg-white text-[#2B2118] text-sm py-3 px-4 rounded-[6px] border border-[#2B2118]/25 focus:border-[#2F5D3A] transition-colors outline-hidden disabled:opacity-60 min-h-[44px]"
             />
           </div>
         </div>
       )}
 
-      {/* Scan Now Button */}
+      {/* Submit Button (The ONE solid green primary button once photo chosen) */}
       <div className="pt-1 flex flex-col gap-3 text-left">
         <button
           type="button"
           onClick={handleScanSubmit}
           disabled={!compressionResult || isScanning || isCompressing}
-          className={`w-full min-h-[48px] h-13 flex items-center justify-center gap-3 font-bold text-base sm:text-lg px-6 rounded-[8px] transition-colors ${!compressionResult || isCompressing
+          className={`w-full min-h-[48px] h-13 flex items-center justify-center gap-3 font-bold text-base sm:text-lg px-6 rounded-[6px] transition-colors ${!compressionResult || isCompressing
             ? "bg-[#2B2118]/15 text-[#2B2118]/50 cursor-not-allowed border border-[#2B2118]/15"
             : isScanning
               ? "bg-[#2F5D3A] text-[#F6F1E7] cursor-wait opacity-90"
@@ -457,26 +507,27 @@ export default function ScanPage() {
 
         {/* Raw JSON Result Display */}
         {analysisResult && (
-          <div className="bg-white border border-[#2B2118]/25 rounded-[8px] p-5 flex flex-col gap-3 text-left shadow-xs">
+          <div className="bg-white border border-[#2B2118]/25 rounded-[6px] p-5 flex flex-col gap-3 text-left">
             <div className="flex items-center justify-between border-b border-[#2B2118]/15 pb-3">
-              <div className="flex items-center gap-2">
-                <Code2 className="w-5 h-5 text-[#2F5D3A]" />
-                <span className="font-heading text-base font-bold text-[#2B2118]">
-                  Gemini AI Raw JSON ({language.toUpperCase()})
-                </span>
-              </div>
+              <span className="font-heading text-base font-bold text-[#2B2118]">
+                Gemini AI Raw JSON ({language.toUpperCase()})
+              </span>
               <span
                 className={`text-xs font-bold px-2.5 py-1 rounded-[4px] ${analysisResult.is_plant
                   ? "bg-[#2F5D3A] text-[#F6F1E7]"
-                  : "bg-[#B5412F] text-white"
+                  : "bg-[#2B2118]/15 text-[#2B2118] border border-[#2B2118]/25"
                   }`}
               >
-                {analysisResult.is_plant ? "Plant Detected" : "Not a Plant"}
+                {analysisResult.is_plant
+                  ? language === "en"
+                    ? "Plant Detected"
+                    : "पौधा पहचाना गया"
+                  : t("result_badge_not_plant")}
               </span>
             </div>
 
             {/* Quick Summary Pill Banner */}
-            <div className="bg-[#FAF6EF] rounded-[8px] p-3 text-sm text-[#2B2118] space-y-1">
+            <div className="border border-[#2B2118]/15 rounded-[6px] p-3 text-sm text-[#2B2118] space-y-1">
               <p>
                 <strong>Problem:</strong> {analysisResult.problem_name}
               </p>
@@ -492,24 +543,59 @@ export default function ScanPage() {
               <label className="text-xs font-bold uppercase tracking-wider text-[#2B2118]/70">
                 Full JSON Response:
               </label>
-              <pre className="w-full bg-[#2B2118] text-[#F6F1E7] font-mono text-xs p-4 rounded-[8px] overflow-x-auto max-h-96 leading-relaxed">
+              <pre className="w-full bg-[#2B2118] text-[#F6F1E7] font-mono text-xs p-4 rounded-[6px] overflow-x-auto max-h-96 leading-relaxed">
                 {JSON.stringify(analysisResult, null, 2)}
               </pre>
             </div>
 
             <Link
               href="/result"
-              className="inline-flex items-center justify-center gap-2 bg-[#2F5D3A] hover:bg-[#24492D] text-[#F6F1E7] text-sm font-bold min-h-[48px] px-5 rounded-[8px] transition-colors mt-2"
+              className="inline-flex items-center justify-center gap-2 border border-[#2F5D3A] text-[#2F5D3A] hover:bg-[#2F5D3A]/10 text-sm font-bold min-h-[48px] px-5 rounded-[6px] transition-colors mt-2"
             >
               <span>{t("scan_btn_view_result")}</span>
               <ArrowRight className="w-4 h-4" />
             </Link>
+
+            {/* Prompt to log in if guest user */}
+            {!user ? (
+              <div className="border border-[#2B2118]/25 rounded-[6px] p-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 text-left mt-2">
+                <div className="space-y-1">
+                  <p className="font-heading font-bold text-sm text-[#2B2118]">
+                    {t("scan_save_prompt_title")}
+                  </p>
+                  <p className="text-xs text-[#2B2118]/80 leading-normal">
+                    {t("scan_save_prompt_desc")}
+                  </p>
+                </div>
+                <Link
+                  href="/login?redirect=/history"
+                  className="inline-flex items-center gap-1.5 border border-[#2B2118]/25 hover:bg-[#2B2118]/5 text-[#2B2118] text-xs font-bold px-4 py-2.5 rounded-[6px] shrink-0 min-h-[44px]"
+                >
+                  <span>{t("scan_save_login_btn")}</span>
+                  <ArrowRight className="w-3.5 h-3.5" />
+                </Link>
+              </div>
+            ) : (
+              <div className="border border-[#2F5D3A]/30 rounded-[6px] p-3 flex items-center justify-between text-xs text-[#2F5D3A] font-bold mt-2">
+                <span>
+                  {language === "en"
+                    ? "Saved to your past scans."
+                    : "आपके खाते में जुड़ गया।"}
+                </span>
+                <Link
+                  href="/history"
+                  className="underline hover:text-[#24492D]"
+                >
+                  {t("nav_history")} &rarr;
+                </Link>
+              </div>
+            )}
           </div>
         )}
       </div>
 
-      {/* Guidelines */}
-      <div className="bg-white rounded-[8px] p-5 border border-[#2B2118]/15 shadow-xs space-y-2 text-left">
+      {/* Guidelines: Plain section separated by 1px line (Rule 4) */}
+      <div className="border-t border-[#2B2118]/25 pt-6 space-y-2 text-left">
         <h3 className="font-heading text-sm font-bold text-[#2B2118]">
           {t("scan_tips_title")}
         </h3>

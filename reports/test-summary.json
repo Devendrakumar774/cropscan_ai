@@ -1,0 +1,110 @@
+[
+  {
+    "test": "Home Page (Mobile 390px)",
+    "status": "PASS",
+    "notes": "Overflow: NO (clean layout), Console Errors: 0",
+    "screenshot": "home-mobile-390.png"
+  },
+  {
+    "test": "Home Page (Desktop 1280px)",
+    "status": "PASS",
+    "notes": "Overflow: NO, Console Errors: 0",
+    "screenshot": "home-desktop-1280.png"
+  },
+  {
+    "test": "Scan Page (Mobile 390px)",
+    "status": "PASS",
+    "notes": "Overflow: NO (clean layout), Console Errors: 0",
+    "screenshot": "scan-mobile-390.png"
+  },
+  {
+    "test": "Scan Page (Desktop 1280px)",
+    "status": "PASS",
+    "notes": "Overflow: NO, Console Errors: 0",
+    "screenshot": "scan-desktop-1280.png"
+  },
+  {
+    "test": "Result Page (Mobile 390px)",
+    "status": "PASS",
+    "notes": "Overflow: NO (clean layout), Console Errors: 0",
+    "screenshot": "result-mobile-390.png"
+  },
+  {
+    "test": "Result Page (Desktop 1280px)",
+    "status": "PASS",
+    "notes": "Overflow: NO, Console Errors: 0",
+    "screenshot": "result-desktop-1280.png"
+  },
+  {
+    "test": "History Page (Mobile 390px)",
+    "status": "PASS",
+    "notes": "Overflow: NO (clean layout), Console Errors: 0",
+    "screenshot": "history-mobile-390.png"
+  },
+  {
+    "test": "History Page (Desktop 1280px)",
+    "status": "PASS",
+    "notes": "Overflow: NO, Console Errors: 0",
+    "screenshot": "history-desktop-1280.png"
+  },
+  {
+    "test": "Login Page (Mobile 390px)",
+    "status": "PASS",
+    "notes": "Overflow: NO (clean layout), Console Errors: 0",
+    "screenshot": "login-mobile-390.png"
+  },
+  {
+    "test": "Login Page (Desktop 1280px)",
+    "status": "PASS",
+    "notes": "Overflow: NO, Console Errors: 0",
+    "screenshot": "login-desktop-1280.png"
+  },
+  {
+    "test": "Signup Page (Mobile 390px)",
+    "status": "PASS",
+    "notes": "Overflow: NO (clean layout), Console Errors: 0",
+    "screenshot": "signup-mobile-390.png"
+  },
+  {
+    "test": "Signup Page (Desktop 1280px)",
+    "status": "PASS",
+    "notes": "Overflow: NO, Console Errors: 0",
+    "screenshot": "signup-desktop-1280.png"
+  },
+  {
+    "test": "Dashboard Page (Mobile 390px)",
+    "status": "PASS",
+    "notes": "Overflow: NO (clean layout), Console Errors: 0",
+    "screenshot": "dashboard-mobile-390.png"
+  },
+  {
+    "test": "Dashboard Page (Desktop 1280px)",
+    "status": "PASS",
+    "notes": "Overflow: NO, Console Errors: 0",
+    "screenshot": "dashboard-desktop-1280.png"
+  },
+  {
+    "test": "Leaf Photo Scan & Diagnosis",
+    "status": "PASS",
+    "notes": "Diagnosed 'ये पत्ते की फोटो नहीं लग रही' in 36.4s (undefined). Remedy: NO, Cost: NO",
+    "screenshot": "scan-leaf-result.png"
+  },
+  {
+    "test": "Non-Plant Detection (is_plant: false)",
+    "status": "PASS",
+    "notes": "Not-a-plant notice: YES, Healthy badge hidden: YES, Treatments hidden: YES, Scan Again CTA: YES",
+    "screenshot": "non-plant-result.png"
+  },
+  {
+    "test": "Hindi Language & Devanagari Script Verification",
+    "status": "PASS",
+    "notes": "Devanagari characters: 631, Localized CTA: YES",
+    "screenshot": "hindi-homepage.png"
+  },
+  {
+    "test": "Supabase Auth & Protected History",
+    "status": "PASS",
+    "notes": "Signup/Login processed for farmer_1793468020161@example.com. History gated when logged out: YES",
+    "screenshot": "history-logged-out.png"
+  }
+]
