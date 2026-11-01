@@ -14,7 +14,7 @@ export interface CompressionResult {
 }
 
 const MAX_BYTES = 1024 * 1024; // 1 MB limit
-const MAX_DIMENSION = 1920; // 1080p-4k downscale to preserve diagnostic leaf clarity
+const MAX_DIMENSION = 1024; // Max longest dimension 1024px for fast upload & AI analysis
 
 /**
  * Extracts EXIF orientation tag from a JPEG ArrayBuffer
@@ -238,7 +238,7 @@ async function encodeUnder1MB(canvas: HTMLCanvasElement): Promise<Blob | null> {
     });
   };
 
-  let quality = 0.9;
+  let quality = 0.7; // Start at 0.7 quality (~100-250 KB output)
   let blob = await canvasToBlob(quality);
 
   while (blob && blob.size > MAX_BYTES && quality > 0.25) {

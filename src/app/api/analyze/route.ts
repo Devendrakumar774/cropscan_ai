@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
+export const maxDuration = 60;
+
 export interface CostEstimate {
   local_remedy_cost_inr: string;
   chemical_cost_inr: string;
@@ -18,6 +20,7 @@ export interface CropDiagnosisResult {
   do_not_buy: string[];
   prevention: string[];
   cost_estimate?: CostEstimate;
+  timing_ms?: number;
 }
 
 const VALID_PROBLEM_TYPES = [
@@ -55,13 +58,68 @@ function getFriendlyHighDemandMessage(lang: string = "hi"): string {
   );
 }
 
-function sanitizeAndValidate(raw: unknown): CropDiagnosisResult {
+// Strict Gemini JSON Response Schema
+const CROP_DIAGNOSIS_SCHEMA = {
+  type: "OBJECT",
+  properties: {
+    is_plant: { type: "BOOLEAN" },
+    problem_name: { type: "STRING" },
+    problem_type: {
+      type: "STRING",
+      enum: ["disease", "pest", "nutrient_deficiency", "healthy"],
+    },
+    confidence: { type: "INTEGER" },
+    cause: { type: "STRING" },
+    symptoms_seen: {
+      type: "ARRAY",
+      items: { type: "STRING" },
+    },
+    cheap_local_remedy: {
+      type: "ARRAY",
+      items: { type: "STRING" },
+    },
+    chemical_option: {
+      type: "ARRAY",
+      items: { type: "STRING" },
+    },
+    do_not_buy: {
+      type: "ARRAY",
+      items: { type: "STRING" },
+    },
+    prevention: {
+      type: "ARRAY",
+      items: { type: "STRING" },
+    },
+    cost_estimate: {
+      type: "OBJECT",
+      properties: {
+        local_remedy_cost_inr: { type: "STRING" },
+        chemical_cost_inr: { type: "STRING" },
+        savings_summary: { type: "STRING" },
+      },
+      required: ["local_remedy_cost_inr", "chemical_cost_inr"],
+    },
+  },
+  required: [
+    "is_plant",
+    "problem_name",
+    "problem_type",
+    "confidence",
+    "cause",
+    "symptoms_seen",
+    "cheap_local_remedy",
+    "chemical_option",
+    "do_not_buy",
+    "prevention",
+  ],
+};
+
+function sanitizeAndValidate(raw: unknown, timingMs: number): CropDiagnosisResult {
   if (typeof raw !== "object" || raw === null) {
     throw new Error("Invalid response format: expected a JSON object");
   }
 
   const obj = raw as Record<string, unknown>;
-
   const is_plant = Boolean(obj.is_plant);
 
   // If not a plant or image is too blurry
@@ -83,6 +141,7 @@ function sanitizeAndValidate(raw: unknown): CropDiagnosisResult {
       chemical_option: [],
       do_not_buy: [],
       prevention: [],
+      timing_ms: timingMs,
     };
   }
 
@@ -136,31 +195,33 @@ function sanitizeAndValidate(raw: unknown): CropDiagnosisResult {
     problem_type,
     confidence,
     cause:
-
       typeof obj.cause === "string" && obj.cause.trim()
         ? obj.cause
         : "Spots or marks observed on the leaf show a crop problem.",
     symptoms_seen: Array.isArray(obj.symptoms_seen)
-      ? obj.symptoms_seen.map(String)
+      ? obj.symptoms_seen.map(String).slice(0, 2)
       : [],
     cheap_local_remedy: Array.isArray(obj.cheap_local_remedy)
-      ? obj.cheap_local_remedy.map(String)
+      ? obj.cheap_local_remedy.map(String).slice(0, 3)
       : [],
     chemical_option: Array.isArray(obj.chemical_option)
-      ? obj.chemical_option.map(String)
+      ? obj.chemical_option.map(String).slice(0, 3)
       : [],
     do_not_buy: Array.isArray(obj.do_not_buy)
-      ? obj.do_not_buy.map(String)
+      ? obj.do_not_buy.map(String).slice(0, 3)
       : [],
     prevention: Array.isArray(obj.prevention)
-      ? obj.prevention.map(String)
+      ? obj.prevention.map(String).slice(0, 3)
       : [],
     cost_estimate,
+    timing_ms: timingMs,
   };
 }
 
 export async function POST(req: NextRequest) {
+  const serverStartTime = Date.now();
   let reqLanguage = "hi";
+
   try {
     const apiKey = process.env.GEMINI_API_KEY || process.env.GEMINI_API_KE;
     if (!apiKey) {
@@ -173,7 +234,11 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    // 1. MEASURE REQUEST PARSE TIME
     const body = await req.json();
+    const parseTimeMs = Date.now() - serverStartTime;
+    console.log(`[CropScan API] Request JSON parsed in ${parseTimeMs}ms`);
+
     const {
       image,
       crop,
@@ -206,7 +271,7 @@ export async function POST(req: NextRequest) {
     const chemicals =
       recent_chemicals || context?.recent_chemicals || "None reported";
 
-    // Extract mime type and clean base64 data
+    // Clean base64 data
     let mimeType = "image/jpeg";
     let base64Data = image;
 
@@ -216,110 +281,29 @@ export async function POST(req: NextRequest) {
       base64Data = dataUrlMatch[2];
     }
 
-    const systemPrompt = `You are an expert agricultural plant pathologist and agronomist.
-A farmer has submitted a leaf photograph for crop diagnosis.
-Declared Crop: "${selectedCrop}".
-Target Farmer Language: "${targetLanguageName}".
+    // 3. SHORTENED PROMPT (Max 15 words per sentence, max 3 items per list, max 2 symptoms)
+    const compactSystemPrompt = `Expert plant pathologist. Diagnose this leaf photo for a farmer.
+Crop: "${selectedCrop}". Target Farmer Language: "${targetLanguageName}".
+Field context: Days since started: ${daysSince}, Area affected: ${spread}, Recent spray: ${chemicals}.
 
-Farmer's Additional Field Context:
-- Days since symptoms started: ${daysSince}
-- Field area affected: ${spread}
-- Recent fertilizer or pesticide application: ${chemicals}
-
-* Diagnostic Guidance:
-- Use this additional context to refine your diagnosis. For example: rapid onset (1-3 days) across "Most" of the field suggests aggressive blight or chemical burn. Symptoms appearing right after fertilizer/spray could indicate phytotoxicity or chemical scorch. Long duration (7+ days) with a few plants affected indicates slower-moving pathogens or soil nutrient deficiencies.
-
-CRITICAL LANGUAGE REQUIREMENT:
-You MUST write ALL string values in the JSON output strictly in ${targetLanguageName} (using the native script and vocabulary of ${targetLanguageName} that local farmers understand).
-Keep ALL JSON keys in English as specified in the schema.
-
-Instructions:
-1. Examine the image carefully.
-   - If the image does NOT show a plant/crop leaf, or if it is too blurry, too dark, out of focus, or indecipherable:
-     Return:
-     {
-       "is_plant": false,
-       "problem_name": "Ye patte ki photo nahi lag rahi",
-       "problem_type": "healthy",
-       "confidence": 0,
-       "cause": "Patte ko paas se, achhi roshni mein, saaf photo lein.",
-       "symptoms_seen": [],
-       "cheap_local_remedy": [],
-       "chemical_option": [],
-       "do_not_buy": [],
-       "prevention": []
-     }
-     (Note: write the string values of problem_name and cause translated naturally into ${targetLanguageName})
-
-2. If the image IS a crop leaf:
-   - Identify whether it is healthy or affected by a fungal/bacterial/viral disease, insect/pest damage, or nutrient deficiency.
-   - "problem_name": Specific disease/deficiency name in ${targetLanguageName} (can include common/scientific name in parentheses).
-   - "problem_type": STRICTLY one of: "disease", "pest", "nutrient_deficiency", "healthy".
-   - "confidence": Integer 0 to 100 representing confidence score.
-   - "cause": Detailed, simple explanation in ${targetLanguageName} of the biological or soil cause.
-   - "symptoms_seen": Array of specific visual symptoms in ${targetLanguageName} spotted on this leaf.
-   - "cheap_local_remedy": Array of affordable, organic, or household remedies in ${targetLanguageName} (e.g., neem oil, sour buttermilk, bio-fungicides).
-   - "chemical_option": Array of standard chemical treatments / fertilizers in ${targetLanguageName} with active ingredient and dosage (e.g. spray dosage per liter).
-   - "do_not_buy": Array of unnecessary or overpriced chemicals/tonics in ${targetLanguageName} that shopkeepers wrongly sell for this issue.
-   - "prevention": Array of agricultural cultural practices in ${targetLanguageName} to avoid this problem in future crop cycles.
-   - "cost_estimate": An object estimating approximate treatment cost in Indian Rupees (INR) per acre:
-     {
-       "local_remedy_cost_inr": "Approximate INR range for cheap/local remedy per acre (e.g. '₹50 - ₹150' or '₹50 - ₹150 / एकड़' written in ${targetLanguageName})",
-       "chemical_cost_inr": "Approximate INR range for chemical option per acre (e.g. '₹450 - ₹800' or '₹450 - ₹800 / एकड़' written in ${targetLanguageName})",
-       "savings_summary": "One sentence in ${targetLanguageName} comparing cost and highlighting potential farmer savings per acre"
-     }
-
-You MUST return STRICT JSON adhering directly to the required schema with no extra commentary or markdown.`;
-
-    const requestBody = {
-      contents: [
-        {
-          role: "user",
-          parts: [
-            {
-              inlineData: {
-                mimeType,
-                data: base64Data,
-              },
-            },
-            {
-              text: systemPrompt,
-            },
-          ],
-        },
-      ],
-      generationConfig: {
-        responseMimeType: "application/json",
-        temperature: 0.15,
-      },
-    };
+RULES:
+1. All string values MUST be in ${targetLanguageName} (native script). JSON keys stay in English.
+2. If NOT a plant leaf or too blurry to identify: set "is_plant": false, "confidence": 0, "problem_name": "Ye patte ki photo nahi lagti" (in ${targetLanguageName}), empty lists.
+3. If a crop leaf: identify disease, pest, nutrient deficiency, or healthy.
+4. Output MUST be short and concise:
+   - Each sentence max 15 words.
+   - Max 2 symptoms in symptoms_seen.
+   - Max 3 items in cheap_local_remedy, chemical_option, do_not_buy, and prevention.
+   - No long paragraphs. Simple farmer language.
+5. In cost_estimate, give approximate INR per acre (e.g. "₹50 - ₹150" and "₹450 - ₹800").`;
 
     const primaryModel = process.env.GEMINI_MODEL || "gemini-3.8-flash";
     const fallbackModel =
       process.env.GEMINI_FALLBACK_MODEL ||
-      (primaryModel === "gemini-3.8-flash" ? "gemini-2.5-flash" : "gemini-3.8-flash");
+      (primaryModel === "gemini-3.8-flash" ? "gemini-3.5-flash-lite" : "gemini-3.5-flash");
 
-    const BACKOFF_DELAYS = [1000, 2000, 4000];
-    const TIMEOUT_MS = 25000;
+    const TIMEOUT_MS = 15000; // 15 seconds per attempt
     const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-
-    const callModelWithTimeout = async (model: string): Promise<Response> => {
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
-      try {
-        return await fetch(url, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify(requestBody),
-          signal: controller.signal,
-        });
-      } finally {
-        clearTimeout(timer);
-      }
-    };
 
     interface GeminiApiResponse {
       candidates?: Array<{
@@ -336,105 +320,164 @@ You MUST return STRICT JSON adhering directly to the required schema with no ext
       };
     }
 
+    // Helper to call model with AbortController timeout & optional thinkingConfig
+    const callModel = async (
+      modelName: string,
+      includeThinking: boolean = true
+    ): Promise<Response> => {
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`;
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+
+      const generationConfig: Record<string, unknown> = {
+        responseMimeType: "application/json",
+        responseSchema: CROP_DIAGNOSIS_SCHEMA,
+        temperature: 0.2,
+        maxOutputTokens: 900,
+      };
+
+      if (includeThinking) {
+        generationConfig.thinkingConfig = { thinkingBudget: 0 };
+      }
+
+      const payload = {
+        contents: [
+          {
+            role: "user",
+            parts: [
+              {
+                inlineData: {
+                  mimeType,
+                  data: base64Data,
+                },
+              },
+              {
+                text: compactSystemPrompt,
+              },
+            ],
+          },
+        ],
+        generationConfig,
+      };
+
+      try {
+        return await fetch(url, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(payload),
+          signal: controller.signal,
+        });
+      } finally {
+        clearTimeout(timer);
+      }
+    };
+
+    // Invocation wrapper: handles 15s timeout, 400 rejection of thinkingConfig, and single 1s retry on 503/429
+    const executeModelAttempt = async (
+      modelName: string,
+      attemptTag: string
+    ): Promise<{ res: Response | null; data: GeminiApiResponse | null; error: string }> => {
+      let includeThinking = true;
+
+      for (let retry = 0; retry <= 1; retry++) {
+        if (retry > 0) {
+          console.warn(`[CropScan API] Retrying ${modelName} after 1s delay on high demand...`);
+          await sleep(1000);
+        }
+
+        const callStart = Date.now();
+        try {
+          let res = await callModel(modelName, includeThinking);
+          let callDuration = Date.now() - callStart;
+
+          // If rejected with 400 (e.g. model does not support thinkingConfig), immediately retry without it
+          if (res.status === 400 && includeThinking) {
+            console.warn(
+              `[CropScan API] Model ${modelName} returned 400 with thinkingConfig. Retrying without thinkingConfig immediately...`
+            );
+            includeThinking = false;
+            const subStart = Date.now();
+            res = await callModel(modelName, false);
+            callDuration += Date.now() - subStart;
+          }
+
+          console.log(
+            `[CropScan API] Call to "${modelName}" (${attemptTag}, try ${retry + 1}) took ${callDuration}ms (HTTP ${res.status})`
+          );
+
+          if (res.ok) {
+            const data: GeminiApiResponse = await res.json();
+            return { res, data, error: "" };
+          }
+
+          if (res.status === 503 || res.status === 429) {
+            // Retry once on 503 or 429
+            continue;
+          }
+
+          // Non-retryable status (e.g. 404, bad argument), return error immediately
+          return { res, data: null, error: `HTTP ${res.status}` };
+        } catch (fetchErr: unknown) {
+          const callDuration = Date.now() - callStart;
+          const isTimeout =
+            fetchErr instanceof Error &&
+            (fetchErr.name === "AbortError" || fetchErr.message.includes("timeout"));
+          const reason = isTimeout ? "timeout (15s exceeded)" : (fetchErr instanceof Error ? fetchErr.message : "network failure");
+          console.warn(`[CropScan API] "${modelName}" (${attemptTag}) failed after ${callDuration}ms: ${reason}`);
+
+          // On timeout or network failure, do not spend more time on slow model, switch immediately
+          return { res: null, data: null, error: reason };
+        }
+      }
+
+      return { res: null, data: null, error: "high demand (503/429) after retry" };
+    };
+
     let geminiRes: Response | null = null;
     let geminiData: GeminiApiResponse | null = null;
     let lastErrorReason = "";
 
-    // 1. Primary Model: Initial attempt + up to 3 retries with exponential backoff (1s, 2s, 4s) on 503, 429, or timeout
-    for (let attempt = 0; attempt <= 3; attempt++) {
-      if (attempt > 0) {
-        const delay = BACKOFF_DELAYS[attempt - 1] || 4000;
-        console.warn(
-          `[Gemini API] Primary model "${primaryModel}" encountered temporary error (${lastErrorReason}). Retrying ${attempt}/3 with exponential backoff after ${delay}ms...`
-        );
-        await sleep(delay);
-      }
-
-      try {
-        const res = await callModelWithTimeout(primaryModel);
-        if (res.ok) {
-          geminiRes = res;
-          geminiData = await res.json();
-          break;
-        }
-
-        lastErrorReason = `HTTP ${res.status}`;
-
-        // Retry when Gemini returns 503 (high demand) or 429 (rate limit)
-        if (res.status === 503 || res.status === 429) {
-          continue;
-        }
-
-        // For non-retryable client errors (like 404 or bad parameter), break early to fallback model
-        console.warn(
-          `[Gemini API] Primary model "${primaryModel}" returned non-transient status ${res.status}. Switching to fallback model.`
-        );
-        break;
-      } catch (fetchErr: unknown) {
-        const isTimeout =
-          fetchErr instanceof Error &&
-          (fetchErr.name === "AbortError" || fetchErr.message.includes("timeout"));
-        lastErrorReason = isTimeout ? "network timeout (25s)" : (fetchErr instanceof Error ? fetchErr.message : "network failure");
-        console.warn(
-          `[Gemini API] Network issue on primary model "${primaryModel}": ${lastErrorReason}.`
-        );
-        continue;
-      }
-    }
-
-    // 2. If primary model still fails, fall back to GEMINI_FALLBACK_MODEL and retry once
-    if (!geminiRes) {
+    // 5. TRY PRIMARY MODEL (15s timeout, 1 retry max)
+    console.log(`[CropScan API] Starting diagnosis with primary model: "${primaryModel}"`);
+    const primaryAttempt = await executeModelAttempt(primaryModel, "primary");
+    if (primaryAttempt.res && primaryAttempt.data) {
+      geminiRes = primaryAttempt.res;
+      geminiData = primaryAttempt.data;
+    } else {
+      lastErrorReason = primaryAttempt.error;
       console.warn(
-        `[Gemini API] Primary model "${primaryModel}" failed after all attempts. Falling back to second model GEMINI_FALLBACK_MODEL ("${fallbackModel}")...`
+        `[CropScan API] Primary model "${primaryModel}" failed (${lastErrorReason}). Switching immediately to fallback model: "${fallbackModel}"`
       );
 
-      for (let fbAttempt = 0; fbAttempt <= 1; fbAttempt++) {
-        if (fbAttempt > 0) {
-          console.warn(
-            `[Gemini API] Retrying fallback model "${fallbackModel}" after 2000ms (previous: ${lastErrorReason})...`
-          );
-          await sleep(2000);
-        }
-
-        try {
-          const res = await callModelWithTimeout(fallbackModel);
-          if (res.ok) {
-            geminiRes = res;
-            geminiData = await res.json();
-            console.warn(
-              `[Gemini API] Fallback model "${fallbackModel}" successfully processed the diagnosis.`
-            );
-            break;
-          }
-
-          lastErrorReason = `HTTP ${res.status}`;
-          if (res.status === 503 || res.status === 429) {
-            continue;
-          }
-          break;
-        } catch (fbErr: unknown) {
-          const isTimeout =
-            fbErr instanceof Error &&
-            (fbErr.name === "AbortError" || fbErr.message.includes("timeout"));
-          lastErrorReason = isTimeout ? "network timeout (25s)" : (fbErr instanceof Error ? fbErr.message : "network failure");
-          console.warn(
-            `[Gemini API] Network issue on fallback model "${fallbackModel}": ${lastErrorReason}.`
-          );
-          continue;
+      // Check remaining server budget (Total 40s budget)
+      if (Date.now() - serverStartTime < 36000) {
+        const fallbackAttempt = await executeModelAttempt(fallbackModel, "fallback");
+        if (fallbackAttempt.res && fallbackAttempt.data) {
+          geminiRes = fallbackAttempt.res;
+          geminiData = fallbackAttempt.data;
+          console.log(`[CropScan API] Fallback model "${fallbackModel}" succeeded.`);
+        } else {
+          lastErrorReason = fallbackAttempt.error;
         }
       }
     }
 
-    // 3. If everything fails, return friendly JSON error in selected language
+    // Total server duration so far
+    const totalServerMs = Date.now() - serverStartTime;
+
+    // Handle failure of both models
     if (!geminiRes || !geminiData) {
       console.warn(
-        `[Gemini API] All attempts failed across primary ("${primaryModel}") and fallback ("${fallbackModel}"). Reason: ${lastErrorReason}. Returning friendly high-demand message.`
+        `[CropScan API] Both models failed after ${totalServerMs}ms. Reason: ${lastErrorReason}. Returning friendly high-demand message.`
       );
       const friendlyMessage = getFriendlyHighDemandMessage(langKey);
       return NextResponse.json(
         {
           error: friendlyMessage,
           is_server_busy: true,
+          timing_ms: totalServerMs,
         },
         { status: 503 }
       );
@@ -444,15 +487,15 @@ You MUST return STRICT JSON adhering directly to the required schema with no ext
       geminiData?.candidates?.[0]?.content?.parts?.[0]?.text || "";
 
     if (!rawText) {
-      console.warn("[Gemini API] Received empty candidate text from Gemini.");
+      console.warn(`[CropScan API] Received empty candidate text after ${totalServerMs}ms.`);
       const friendlyMessage = getFriendlyHighDemandMessage(langKey);
       return NextResponse.json(
-        { error: friendlyMessage, is_server_busy: true },
+        { error: friendlyMessage, is_server_busy: true, timing_ms: totalServerMs },
         { status: 503 }
       );
     }
 
-    // Parse JSON safely
+    // Clean JSON string (responseSchema returns clean JSON directly, but strip any markdown wrappers just in case)
     const cleanedJsonStr = rawText
       .replace(/^```(?:json)?\s*/i, "")
       .replace(/\s*```$/i, "")
@@ -462,24 +505,30 @@ You MUST return STRICT JSON adhering directly to the required schema with no ext
     try {
       parsedResult = JSON.parse(cleanedJsonStr);
     } catch (parseError) {
-      console.error("Failed to parse Gemini JSON:", rawText);
+      console.error(`[CropScan API] Failed to parse JSON (${totalServerMs}ms):`, rawText, parseError);
       const friendlyMessage = getFriendlyHighDemandMessage(langKey);
       return NextResponse.json(
         {
           error: friendlyMessage,
           is_server_busy: true,
+          timing_ms: totalServerMs,
         },
         { status: 502 }
       );
     }
 
-    // Validate and sanitize the output strictly against the required shape
-    const validatedResult = sanitizeAndValidate(parsedResult);
+    // Validate and sanitize the output strictly against the required shape, attach timing_ms
+    const validatedResult = sanitizeAndValidate(parsedResult, totalServerMs);
+    console.log(`[CropScan API] Total server execution time: ${totalServerMs}ms`);
 
     return NextResponse.json(validatedResult);
   } catch (error: unknown) {
-    console.error("Analysis API unexpected error:", error);
+    const totalServerMs = Date.now() - serverStartTime;
+    console.error(`[CropScan API] Unexpected error after ${totalServerMs}ms:`, error);
     const friendlyMessage = getFriendlyHighDemandMessage(reqLanguage);
-    return NextResponse.json({ error: friendlyMessage, is_server_busy: true }, { status: 503 });
+    return NextResponse.json(
+      { error: friendlyMessage, is_server_busy: true, timing_ms: totalServerMs },
+      { status: 503 }
+    );
   }
 }

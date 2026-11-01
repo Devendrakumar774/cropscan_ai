@@ -32,6 +32,8 @@ interface StoredScanData extends CropDiagnosisResult {
   imagePreview?: string;
   crop?: string;
   language?: string;
+  client_timing_ms?: number;
+  sync_status?: "saving" | "saved" | "failed" | "skipped";
 }
 
 const BCP47_LANG_CODES: Record<LanguageCode, string> = {
@@ -422,6 +424,15 @@ export default function ResultPage() {
       ) : (
         /* 2. PLANT DETECTED: Diagnosis & Treatment Sections */
         <>
+          {/* Non-blocking sync note if background cloud save was skipped or failed */}
+          {data.sync_status === "failed" && (
+            <div className="bg-[#E0A526]/10 border border-[#E0A526]/30 text-[#2B2118] text-xs px-3.5 py-2 rounded-[6px]">
+              {language === "en"
+                ? "Note: Could not save to history offline. Your diagnosis is available below."
+                : "सूचना: यह जांच पुराने रिकॉर्ड में नहीं जुड़ सकी। इलाज नीचे दिया गया है।"}
+            </div>
+          )}
+
           {/* Main Result Card */}
           <div className="bg-white rounded-[6px] p-5 sm:p-6 border border-[#2B2118]/25 space-y-4 text-left">
             <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#2B2118]/15 pb-3">

@@ -46,6 +46,7 @@ export default function ScanPage() {
   const [isScanning, setIsScanning] = useState(false);
   const [analysisResult, setAnalysisResult] = useState<CropDiagnosisResult | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [scanStepIndex, setScanStepIndex] = useState(0);
 
   // 3 Follow-up Questions State
   const [daysSinceSymptoms, setDaysSinceSymptoms] = useState<"1-3" | "4-7" | "7+" | null>(null);
@@ -212,7 +213,7 @@ export default function ScanPage() {
 
     let targetWidth = sourceWidth;
     let targetHeight = sourceHeight;
-    const MAX_DIM = 1280;
+    const MAX_DIM = 1024;
 
     if (targetWidth > MAX_DIM || targetHeight > MAX_DIM) {
       if (targetWidth > targetHeight) {
@@ -265,7 +266,7 @@ export default function ScanPage() {
         await processSelectedFile(capturedFile);
       },
       "image/jpeg",
-      0.8
+      0.7
     );
   };
 
@@ -333,36 +334,51 @@ export default function ScanPage() {
     });
   };
 
+  const getProgressLine = () => {
+    if (scanStepIndex === 0) return t("scan_step_0");
+    if (scanStepIndex === 1) return t("scan_step_1");
+    return t("scan_step_2");
+  };
+
   const handleScanSubmit = async () => {
     if (!compressionResult || isScanning) return;
 
+    const clickStartTime = performance.now();
     setIsScanning(true);
+    setScanStepIndex(0);
     setError(null);
     setAnalysisResult(null);
+
+    // Progress interval rotates every 2.5 seconds
+    const progressTimer = setInterval(() => {
+      setScanStepIndex((prev) => (prev < 2 ? prev + 1 : prev));
+    }, 2500);
 
     try {
       const base64Image = await fileToBase64(compressionResult.file);
 
-      // Concurrent: upload compressed photo to Supabase 'crop-images' bucket + call /api/analyze
-      const [uploadedUrl, response] = await Promise.all([
-        uploadCropImage(compressionResult.file),
-        fetch("/api/analyze", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            image: base64Image,
-            crop: selectedCrop,
-            language: language,
-            days_since_symptoms: daysSinceSymptoms,
-            field_spread: fieldSpread,
-            recent_chemicals: recentChemicals.trim() || null,
-          }),
+      // FAST PATH: Only call /api/analyze - zero blocking on storage or database!
+      const response = await fetch("/api/analyze", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          image: base64Image,
+          crop: selectedCrop,
+          language: language,
+          days_since_symptoms: daysSinceSymptoms,
+          field_spread: fieldSpread,
+          recent_chemicals: recentChemicals.trim() || null,
         }),
-      ]);
+      });
 
       const data = await response.json();
+      const totalTimeMs = Math.round(performance.now() - clickStartTime);
+
+      console.log(
+        `[CropScan Client] Total time from click to result: ${totalTimeMs}ms (Server execution: ${data?.timing_ms ?? "N/A"}ms)`
+      );
 
       if (!response.ok) {
         const friendlyFallback = t("scan_server_busy");
@@ -380,47 +396,84 @@ export default function ScanPage() {
         throw new Error(isTechnical ? friendlyFallback : receivedError);
       }
 
-      console.log("=== [CropScan AI] Gemini Analysis Result ===", data);
       setAnalysisResult(data);
 
-      const finalImageUrl = uploadedUrl || compressionResult.previewUrl;
+      const localPreviewUrl = compressionResult.previewUrl;
 
-      let savedScanId: string | undefined = undefined;
-
-      // Do NOT save non-plant scans to Supabase history
-      if (data.is_plant) {
-        try {
-          const savedScan = await saveScanRecord({
-            crop: selectedCrop,
-            problem_name: data.problem_name,
-            problem_type: data.problem_type,
-            confidence: data.confidence,
-            result_json: data,
-            image_url: finalImageUrl,
-            user_id: user?.id || "anonymous",
-          });
-          savedScanId = savedScan?.id;
-          console.log("=== [CropScan AI] Scan Saved to Supabase ===", savedScan);
-        } catch (dbErr) {
-          console.warn("Could not save to Supabase history:", dbErr);
-        }
-      } else {
-        console.log("=== [CropScan AI] Non-plant scan detected; skipped saving to Supabase history ===");
-      }
-
+      // 4. STORE RESULT TO SESSION STORAGE SO RESULT PAGE RENDERS DIRECTLY
       if (typeof window !== "undefined") {
         sessionStorage.setItem(
           "cropscan_last_result",
           JSON.stringify({
             ...data,
-            imagePreview: finalImageUrl,
+            imagePreview: localPreviewUrl,
             crop: selectedCrop,
             language: language,
-            scanId: savedScanId,
+            client_timing_ms: totalTimeMs,
+            sync_status: data.is_plant ? "saving" : "skipped",
           })
         );
       }
 
+      // 4. BACKGROUND ASYNC: Upload photo & save Supabase record AFTER showing result (never blocks navigation)
+      if (data.is_plant) {
+        const fileToUpload = compressionResult.file;
+        const cropName = selectedCrop;
+        const currentUserId = user?.id || "anonymous";
+
+        (async () => {
+          try {
+            console.log("[CropScan AI] Background Supabase photo upload starting...");
+            const uploadedUrl = await uploadCropImage(fileToUpload);
+            console.log("[CropScan AI] Background photo uploaded. Saving DB record...");
+
+            const savedScan = await saveScanRecord({
+              crop: cropName,
+              problem_name: data.problem_name,
+              problem_type: data.problem_type,
+              confidence: data.confidence,
+              result_json: data,
+              image_url: uploadedUrl || localPreviewUrl,
+              user_id: currentUserId,
+            });
+
+            console.log("[CropScan AI] Background scan saved to Supabase with ID:", savedScan?.id);
+
+            if (typeof window !== "undefined") {
+              const current = sessionStorage.getItem("cropscan_last_result");
+              if (current) {
+                const parsed = JSON.parse(current);
+                sessionStorage.setItem(
+                  "cropscan_last_result",
+                  JSON.stringify({
+                    ...parsed,
+                    scanId: savedScan?.id,
+                    image_url: uploadedUrl,
+                    sync_status: "saved",
+                  })
+                );
+              }
+            }
+          } catch (bgErr) {
+            console.warn("[CropScan AI] Background Supabase save encountered an issue (non-blocking):", bgErr);
+            if (typeof window !== "undefined") {
+              const current = sessionStorage.getItem("cropscan_last_result");
+              if (current) {
+                const parsed = JSON.parse(current);
+                sessionStorage.setItem(
+                  "cropscan_last_result",
+                  JSON.stringify({
+                    ...parsed,
+                    sync_status: "failed",
+                  })
+                );
+              }
+            }
+          }
+        })();
+      }
+
+      // NAVIGATE TO RESULT IMMEDIATELY
       router.push("/result");
     } catch (err: unknown) {
       console.error("Scan submission error:", err);
@@ -440,6 +493,7 @@ export default function ScanPage() {
       const displayMessage = isTechnical ? t("scan_server_busy") : rawMsg;
       setError(displayMessage);
     } finally {
+      clearInterval(progressTimer);
       setIsScanning(false);
     }
   };
@@ -779,14 +833,33 @@ export default function ScanPage() {
             }`}
         >
           {isScanning ? (
-            <>
-              <Loader2 className="w-5 h-5 animate-spin" />
-              <span>{t("scan_loading")}</span>
-            </>
+            <div className="flex items-center justify-center gap-2.5">
+              <Loader2 className="w-5 h-5 animate-spin text-[#F6F1E7]" />
+              <span>{getProgressLine()}</span>
+            </div>
           ) : (
             <span>{t("scan_btn_submit")}</span>
           )}
         </button>
+
+        {/* 6. Live progress line & indicator dots while scanning (no blank spinner) */}
+        {isScanning && (
+          <div className="flex items-center justify-center gap-2 py-1 text-xs text-[#2F5D3A] font-semibold">
+            <span
+              className={`w-2 h-2 rounded-full transition-all duration-300 ${scanStepIndex >= 0 ? "bg-[#2F5D3A] scale-110" : "bg-[#2B2118]/20"
+                }`}
+            />
+            <span
+              className={`w-2 h-2 rounded-full transition-all duration-300 ${scanStepIndex >= 1 ? "bg-[#2F5D3A] scale-110" : "bg-[#2B2118]/20"
+                }`}
+            />
+            <span
+              className={`w-2 h-2 rounded-full transition-all duration-300 ${scanStepIndex >= 2 ? "bg-[#2F5D3A] scale-110" : "bg-[#2B2118]/20"
+                }`}
+            />
+            <span className="ml-1.5">{getProgressLine()}</span>
+          </div>
+        )}
 
         {/* Raw JSON Result Display */}
         {analysisResult && (
