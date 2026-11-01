@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import { Fraunces, Noto_Sans } from "next/font/google";
 import Navbar from "@/components/Navbar";
+import ServiceWorkerRegister from "@/components/ServiceWorkerRegister";
 import { LanguageProvider } from "@/context/LanguageContext";
 import { AuthProvider } from "@/context/AuthContext";
 import "./globals.css";
@@ -52,6 +53,7 @@ export default function RootLayout({
       <body className="min-h-full flex flex-col bg-[#F6F1E7] text-[#2B2118]">
         <LanguageProvider>
           <AuthProvider>
+            <ServiceWorkerRegister />
             <Navbar />
             <main className="flex-1 w-full max-w-lg md:max-w-2xl mx-auto px-3.5 py-4 sm:px-6 sm:py-5 min-w-0">
               {children}

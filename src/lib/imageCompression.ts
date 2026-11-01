@@ -94,11 +94,18 @@ export async function compressImageToUnder1MB(inputFile: File): Promise<Compress
       const ctx = canvas.getContext("2d");
       if (!ctx) throw new Error("Could not acquire 2D canvas context");
 
-      // Draw bitmap which is already upright thanks to imageOrientation: "from-image"
-      ctx.drawImage(bitmap, 0, 0, targetWidth, targetHeight);
-      bitmap.close();
+      // Draw bitmap upright then release memory immediately
+      try {
+        ctx.drawImage(bitmap, 0, 0, targetWidth, targetHeight);
+      } finally {
+        bitmap.close();
+        bitmap = null;
+      }
 
       const blob = await encodeUnder1MB(canvas);
+      canvas.width = 0;
+      canvas.height = 0;
+
       if (!blob) throw new Error("Failed to encode compressed image");
 
       const outputName = inputFile.name.replace(/\.[^.]+$/, "") + "-upright.jpg";
@@ -113,9 +120,13 @@ export async function compressImageToUnder1MB(inputFile: File): Promise<Compress
         originalSize,
         compressedSize: compressedFile.size,
         originalDimensions: { width: originalWidth, height: originalHeight },
-        compressedDimensions: { width: canvas.width, height: canvas.height },
+        compressedDimensions: { width: targetWidth, height: targetHeight },
       };
     } catch (err) {
+      if (bitmap) {
+        bitmap.close();
+        bitmap = null;
+      }
       console.warn("createImageBitmap compression failed, falling back to canvas EXIF rotation:", err);
     }
   }
@@ -187,6 +198,8 @@ export async function compressImageToUnder1MB(inputFile: File): Promise<Compress
         ctx.restore();
 
         const blob = await encodeUnder1MB(canvas);
+        canvas.width = 0;
+        canvas.height = 0;
         if (!blob) {
           reject(new Error("Image compression produced empty output"));
           return;
@@ -243,6 +256,8 @@ async function encodeUnder1MB(canvas: HTMLCanvasElement): Promise<Blob | null> {
       tempCtx.drawImage(canvas, 0, 0, tempCanvas.width, tempCanvas.height);
       blob = await new Promise((res) => tempCanvas.toBlob((b) => res(b), "image/jpeg", 0.7));
     }
+    tempCanvas.width = 0;
+    tempCanvas.height = 0;
   }
 
   return blob;

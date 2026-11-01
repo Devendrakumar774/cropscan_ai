@@ -1,25 +1,23 @@
 "use client";
 
-import { useState, useRef, ChangeEvent } from "react";
+import { useState, useRef, useEffect, ChangeEvent } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
   Camera,
   Image as ImageIcon,
   Loader2,
-  CheckCircle2,
   AlertCircle,
   RotateCcw,
   ArrowRight,
-  Info,
-  Code2,
-  HelpCircle,
   RefreshCw,
+  X,
 } from "lucide-react";
 import { compressImageToUnder1MB, formatBytes, CompressionResult } from "@/lib/imageCompression";
 import { uploadCropImage, saveScanRecord } from "@/lib/supabase";
 import { useLanguage } from "@/context/LanguageContext";
 import { useAuth } from "@/context/AuthContext";
+import { LANGUAGES, LanguageCode } from "@/lib/translations";
 import type { CropDiagnosisResult } from "@/app/api/analyze/route";
 
 export const CROPS = [
@@ -35,10 +33,13 @@ export const CROPS = [
 
 export type CropValue = (typeof CROPS)[number]["value"];
 
+const FORM_STORAGE_KEY = "cropscan_scan_form_state";
+
 export default function ScanPage() {
   const router = useRouter();
-  const { language, t } = useLanguage();
+  const { language, setLanguage, t } = useLanguage();
   const { user } = useAuth();
+
   const [selectedCrop, setSelectedCrop] = useState<CropValue>("Wheat");
   const [compressionResult, setCompressionResult] = useState<CompressionResult | null>(null);
   const [isCompressing, setIsCompressing] = useState(false);
@@ -51,13 +52,225 @@ export default function ScanPage() {
   const [fieldSpread, setFieldSpread] = useState<"A few plants" | "Half" | "Most" | null>(null);
   const [recentChemicals, setRecentChemicals] = useState<string>("");
 
+  // In-App Camera State
+  const [isCameraOpen, setIsCameraOpen] = useState(false);
+  const [facingMode, setFacingMode] = useState<"environment" | "user">("environment");
+  const [hasMultipleCameras, setHasMultipleCameras] = useState(false);
+
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const streamRef = useRef<MediaStream | null>(null);
   const cameraInputRef = useRef<HTMLInputElement>(null);
   const galleryInputRef = useRef<HTMLInputElement>(null);
+  const previewUrlRef = useRef<string | null>(null);
 
-  const handleFileSelection = async (e: ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
+  // 1. RESTORE FORM STATE FROM SESSION STORAGE ON MOUNT (No image stored)
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      const raw = sessionStorage.getItem(FORM_STORAGE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed.crop && CROPS.some((c) => c.value === parsed.crop)) {
+          setSelectedCrop(parsed.crop);
+        }
+        if (parsed.daysSinceSymptoms && ["1-3", "4-7", "7+"].includes(parsed.daysSinceSymptoms)) {
+          setDaysSinceSymptoms(parsed.daysSinceSymptoms);
+        }
+        if (parsed.fieldSpread && ["A few plants", "Half", "Most"].includes(parsed.fieldSpread)) {
+          setFieldSpread(parsed.fieldSpread);
+        }
+        if (typeof parsed.recentChemicals === "string") {
+          setRecentChemicals(parsed.recentChemicals);
+        }
+        if (parsed.language && LANGUAGES.some((l) => l.code === parsed.language)) {
+          setLanguage(parsed.language as LanguageCode);
+        }
+      }
+    } catch (err) {
+      console.warn("Could not restore scan form state from sessionStorage:", err);
+    }
+  }, [setLanguage]);
 
+  // 2. PERSIST FORM STATE TO SESSION STORAGE ON EVERY CHANGE (No image stored)
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      const stateToSave = {
+        crop: selectedCrop,
+        daysSinceSymptoms,
+        fieldSpread,
+        recentChemicals,
+        language,
+      };
+      sessionStorage.setItem(FORM_STORAGE_KEY, JSON.stringify(stateToSave));
+    } catch (err) {
+      console.warn("Could not save scan form state to sessionStorage:", err);
+    }
+  }, [selectedCrop, daysSinceSymptoms, fieldSpread, recentChemicals, language]);
+
+  // 3. STOP CAMERA HELPER (Always stops all tracks)
+  const stopCameraStream = () => {
+    if (streamRef.current) {
+      try {
+        streamRef.current.getTracks().forEach((track) => track.stop());
+      } catch (err) {
+        console.warn("Error stopping camera tracks:", err);
+      }
+      streamRef.current = null;
+    }
+    if (videoRef.current) {
+      videoRef.current.srcObject = null;
+    }
+  };
+
+  // 4. CLEANUP ON UNMOUNT
+  useEffect(() => {
+    return () => {
+      stopCameraStream();
+      if (previewUrlRef.current) {
+        URL.revokeObjectURL(previewUrlRef.current);
+        previewUrlRef.current = null;
+      }
+    };
+  }, []);
+
+  // 5. ATTACH STREAM TO VIDEO ELEMENT WHEN CAMERA OPENS
+  useEffect(() => {
+    if (isCameraOpen && videoRef.current && streamRef.current) {
+      videoRef.current.srcObject = streamRef.current;
+      videoRef.current.play().catch((playErr) => {
+        console.warn("Video play error:", playErr);
+      });
+    }
+  }, [isCameraOpen]);
+
+  // 6. START IN-APP CAMERA WITH FALLBACK
+  const startCamera = async (targetFacing: "environment" | "user" = facingMode) => {
+    setError(null);
+
+    // If getUserMedia unavailable (non-secure context or unsupported), fallback to input
+    if (
+      typeof navigator === "undefined" ||
+      !navigator.mediaDevices ||
+      typeof navigator.mediaDevices.getUserMedia !== "function"
+    ) {
+      setError(t("camera_perm_denied"));
+      cameraInputRef.current?.click();
+      return;
+    }
+
+    stopCameraStream();
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          facingMode: { ideal: targetFacing },
+          width: { ideal: 1280 },
+          height: { ideal: 960 },
+        },
+        audio: false,
+      });
+
+      streamRef.current = stream;
+      setFacingMode(targetFacing);
+      setIsCameraOpen(true);
+
+      // Check if device has more than one camera to show Flip button
+      try {
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const videoInputs = devices.filter((d) => d.kind === "videoinput");
+        setHasMultipleCameras(videoInputs.length > 1);
+      } catch {
+        setHasMultipleCameras(false);
+      }
+    } catch (err: unknown) {
+      console.warn("Camera access failed or denied:", err);
+      stopCameraStream();
+      setIsCameraOpen(false);
+      setError(t("camera_perm_denied"));
+      cameraInputRef.current?.click();
+    }
+  };
+
+  const handleCloseCamera = () => {
+    stopCameraStream();
+    setIsCameraOpen(false);
+  };
+
+  const handleFlipCamera = async () => {
+    const nextMode = facingMode === "environment" ? "user" : "environment";
+    await startCamera(nextMode);
+  };
+
+  // 7. CAPTURE VIDEO FRAME TO CANVAS & SCALE MAX 1280PX
+  const handleCapturePhoto = () => {
+    const video = videoRef.current;
+    if (!video || !streamRef.current) return;
+
+    const sourceWidth = video.videoWidth || 1280;
+    const sourceHeight = video.videoHeight || 960;
+
+    let targetWidth = sourceWidth;
+    let targetHeight = sourceHeight;
+    const MAX_DIM = 1280;
+
+    if (targetWidth > MAX_DIM || targetHeight > MAX_DIM) {
+      if (targetWidth > targetHeight) {
+        targetHeight = Math.round((targetHeight * MAX_DIM) / targetWidth);
+        targetWidth = MAX_DIM;
+      } else {
+        targetWidth = Math.round((targetWidth * MAX_DIM) / targetHeight);
+        targetHeight = MAX_DIM;
+      }
+    }
+
+    const canvas = document.createElement("canvas");
+    canvas.width = targetWidth;
+    canvas.height = targetHeight;
+
+    const ctx = canvas.getContext("2d");
+    if (!ctx) {
+      stopCameraStream();
+      setIsCameraOpen(false);
+      return;
+    }
+
+    ctx.drawImage(video, 0, 0, targetWidth, targetHeight);
+
+    // Stop all stream tracks immediately on capture
+    stopCameraStream();
+    setIsCameraOpen(false);
+
+    canvas.toBlob(
+      async (blob) => {
+        // Free canvas bitmap memory
+        canvas.width = 0;
+        canvas.height = 0;
+
+        if (!blob) {
+          setError(
+            language === "en"
+              ? "Could not capture image. Please try again."
+              : "फोटो नहीं ली जा सकी। दोबारा कोशिश करें।"
+          );
+          return;
+        }
+
+        const capturedFile = new File([blob], `leaf-capture-${Date.now()}.jpg`, {
+          type: "image/jpeg",
+          lastModified: Date.now(),
+        });
+
+        // Pass into same existing flow
+        await processSelectedFile(capturedFile);
+      },
+      "image/jpeg",
+      0.8
+    );
+  };
+
+  // 8. UNIFIED FILE PROCESSOR WITH MEMORY REVOCATION
+  const processSelectedFile = async (file: File) => {
     if (!file.type.startsWith("image/")) {
       setError(
         language === "en"
@@ -72,7 +285,14 @@ export default function ScanPage() {
       setIsCompressing(true);
       setAnalysisResult(null);
 
+      // Revoke previous object URL before replacing
+      if (previewUrlRef.current) {
+        URL.revokeObjectURL(previewUrlRef.current);
+        previewUrlRef.current = null;
+      }
+
       const result = await compressImageToUnder1MB(file);
+      previewUrlRef.current = result.previewUrl;
       setCompressionResult(result);
     } catch (err) {
       console.error("Compression error:", err);
@@ -83,20 +303,24 @@ export default function ScanPage() {
       );
     } finally {
       setIsCompressing(false);
-      e.target.value = "";
     }
   };
 
+  const handleFileSelection = async (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    await processSelectedFile(file);
+    e.target.value = "";
+  };
+
   const handleResetImage = () => {
-    if (compressionResult?.previewUrl) {
-      URL.revokeObjectURL(compressionResult.previewUrl);
+    if (previewUrlRef.current) {
+      URL.revokeObjectURL(previewUrlRef.current);
+      previewUrlRef.current = null;
     }
     setCompressionResult(null);
     setAnalysisResult(null);
     setError(null);
-    setDaysSinceSymptoms(null);
-    setFieldSpread(null);
-    setRecentChemicals("");
   };
 
   // Convert File/Blob to base64 Data URL
@@ -163,7 +387,7 @@ export default function ScanPage() {
 
       let savedScanId: string | undefined = undefined;
 
-      // 3. Do NOT save non-plant scans to Supabase history
+      // Do NOT save non-plant scans to Supabase history
       if (data.is_plant) {
         try {
           const savedScan = await saveScanRecord({
@@ -197,7 +421,6 @@ export default function ScanPage() {
         );
       }
 
-      // Navigate to /result page
       router.push("/result");
     } catch (err: unknown) {
       console.error("Scan submission error:", err);
@@ -223,7 +446,67 @@ export default function ScanPage() {
 
   return (
     <div className="flex flex-col gap-5 py-2 text-left max-w-full overflow-hidden">
-      {/* Hidden File Inputs */}
+      {/* FULLSCREEN IN-APP CAMERA VIEW */}
+      {isCameraOpen && (
+        <div className="fixed inset-0 z-50 bg-black flex flex-col justify-between select-none">
+          {/* Top Bar with Close and Flip buttons */}
+          <div className="relative z-10 flex items-center justify-between p-4 bg-gradient-to-b from-black/80 via-black/40 to-transparent">
+            <button
+              type="button"
+              onClick={handleCloseCamera}
+              className="min-h-[44px] min-w-[44px] px-4 py-2 bg-black/60 hover:bg-black/80 text-white rounded-full flex items-center gap-2 backdrop-blur-xs font-bold text-sm cursor-pointer border border-white/20 transition-colors"
+              aria-label={t("camera_btn_close")}
+            >
+              <X className="w-5 h-5 text-white" />
+              <span>{t("camera_btn_close")}</span>
+            </button>
+
+            {hasMultipleCameras && (
+              <button
+                type="button"
+                onClick={handleFlipCamera}
+                className="min-h-[44px] min-w-[44px] px-4 py-2 bg-black/60 hover:bg-black/80 text-white rounded-full flex items-center gap-2 backdrop-blur-xs font-bold text-sm cursor-pointer border border-white/20 transition-colors"
+                aria-label={t("camera_btn_flip")}
+              >
+                <RefreshCw className="w-4 h-4 text-white" />
+                <span>{t("camera_btn_flip")}</span>
+              </button>
+            )}
+          </div>
+
+          {/* Video Stream & Viewfinder */}
+          <div className="relative flex-1 w-full overflow-hidden flex items-center justify-center">
+            <video
+              ref={videoRef}
+              autoPlay
+              playsInline
+              muted
+              className="absolute inset-0 w-full h-full object-cover"
+            />
+
+            {/* Viewfinder Target Frame */}
+            <div className="relative z-10 w-64 h-64 sm:w-72 sm:h-72 border-2 border-dashed border-white/60 rounded-xl flex flex-col items-center justify-center pointer-events-none p-4 text-center">
+              <span className="text-xs font-bold text-white bg-black/50 px-3 py-1 rounded-full backdrop-blur-xs">
+                {t("camera_center_leaf")}
+              </span>
+            </div>
+          </div>
+
+          {/* Bottom Bar: Big Round Capture Button */}
+          <div className="relative z-10 flex items-center justify-center p-6 bg-gradient-to-t from-black/80 via-black/40 to-transparent">
+            <button
+              type="button"
+              onClick={handleCapturePhoto}
+              className="w-20 h-20 rounded-full border-4 border-white flex items-center justify-center p-1 bg-white/25 active:scale-95 transition-transform cursor-pointer focus:outline-hidden"
+              aria-label={t("camera_btn_capture")}
+            >
+              <span className="w-16 h-16 rounded-full bg-white block shadow-md" />
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Hidden File Inputs: Camera Fallback & Gallery */}
       <input
         ref={cameraInputRef}
         type="file"
@@ -308,7 +591,7 @@ export default function ScanPage() {
           <div className="flex flex-col gap-3 pt-1">
             <button
               type="button"
-              onClick={() => cameraInputRef.current?.click()}
+              onClick={() => startCamera("environment")}
               disabled={isCompressing}
               className="w-full min-h-[48px] h-13 flex items-center justify-center gap-3 bg-[#2F5D3A] hover:bg-[#24492D] active:bg-[#1C3B24] text-[#F6F1E7] font-bold text-base sm:text-lg px-6 rounded-[6px] transition-colors cursor-pointer focus:outline-hidden disabled:opacity-60 disabled:cursor-not-allowed"
             >
@@ -526,7 +809,7 @@ export default function ScanPage() {
               </span>
             </div>
 
-            {/* Quick Summary Pill Banner */}
+            {/* Quick Summary Banner */}
             <div className="border border-[#2B2118]/15 rounded-[6px] p-3 text-sm text-[#2B2118] space-y-1">
               <p>
                 <strong>Problem:</strong> {analysisResult.problem_name}
@@ -594,7 +877,7 @@ export default function ScanPage() {
         )}
       </div>
 
-      {/* Guidelines: Plain section separated by 1px line (Rule 4) */}
+      {/* Guidelines: Plain section separated by 1px line */}
       <div className="border-t border-[#2B2118]/25 pt-6 space-y-2 text-left">
         <h3 className="font-heading text-sm font-bold text-[#2B2118]">
           {t("scan_tips_title")}
